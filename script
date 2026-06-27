@@ -29,117 +29,87 @@ local State = {
 local cons = {}
 
 --//---------------------------------------------------------------
---// Combat func finders (setupvalue only, no hooks)
+--// Function finders (single-pass GC scan)
 --//---------------------------------------------------------------
-local function safeGetGC()
+local hitFuncs = {}
+local slamHandler, slamRender
+local staminaBar
+
+local function scanAll()
+    hitFuncs = {}
+    slamHandler = nil
+    slamRender = nil
+    staminaBar = nil
     local ok, gc = pcall(getgc, false)
-    if ok and gc then return gc end
-    ok, gc = pcall(getgc)
-    if ok and gc then return gc end
-    return {}
-end
+    if not ok or not gc then
+        ok, gc = pcall(getgc)
+        if not ok or not gc then return end
+    end
 
-local function findCombatFunc()
-    for _, v in ipairs(safeGetGC()) do
-        if type(v) == "function" then
-            local ok, c = pcall(getconstants, v)
-            if ok and c then
-                local a, b, d = false, false, false
-                for _, k in ipairs(c) do
-                    if k == "tick" then a = true
-                    elseif k == "punch" then b = true
-                    elseif k == "delay" then d = true end
-                end
-                if a and b and d then return v end
+    for _, v in ipairs(gc) do
+        if type(v) ~= "function" then continue end
+
+        local cOk, c = pcall(getconstants, v)
+        if not cOk or not c then continue end
+
+        local hasTick, hasPunch, hasTouched, hasCombat = false, false, false, false
+        local hasAutoRotate, hasFireServer, hasDelay = false, false, false
+        local hasSlam, hasFist, hasCycle = false, false, false
+        local hasStamina = false
+
+        for _, k in ipairs(c) do
+            if k == "tick" then hasTick = true
+            elseif k == "punch" then hasPunch = true
+            elseif k == "Touched" then hasTouched = true
+            elseif k == "combat" then hasCombat = true
+            elseif k == "AutoRotate" then hasAutoRotate = true
+            elseif k == "FireServer" then hasFireServer = true
+            elseif k == "delay" then hasDelay = true
+            elseif k == "Slam" then hasSlam = true
+            elseif k == "fist" then hasFist = true
+            elseif k == "cycle" then hasCycle = true
+            elseif k == "Stamina" then hasStamina = true end
+        end
+
+        --// Hit/combat function: has tick+punch+Touched+combat
+        if hasTick and hasPunch and hasTouched and hasCombat then
+            table.insert(hitFuncs, v)
+        end
+
+        --// Slam handler: has AutoRotate+combat+FireServer+Slam, ups[17]=number
+        if hasAutoRotate and hasCombat and hasFireServer and hasSlam and not slamHandler then
+            local uOk, ups = pcall(getupvalues, v)
+            if uOk and ups and type(ups[17]) == "number" then
+                slamHandler = v
             end
         end
-    end
-end
 
-local function findSlamFuncs()
-    local inputHandler, slamRender
-    for _, v in ipairs(safeGetGC()) do
-        if type(v) == "function" then
-            local ok, c = pcall(getconstants, v)
-            if ok and c then
-                local a, b, d, e = false, false, false, false
-                for _, k in ipairs(c) do
-                    if k == "Slam" then a = true
-                    elseif k == "FireServer" then b = true
-                    elseif k == "fist" then d = true
-                    elseif k == "cycle" then e = true end
-                end
-                if a and b and d and not inputHandler then inputHandler = v end
-                if a and b and e and not slamRender then slamRender = v end
+        --// Slam render: has cycle+Slam+FireServer, ups[8]=number
+        if hasCycle and hasSlam and hasFireServer and not slamRender then
+            local uOk, ups = pcall(getupvalues, v)
+            if uOk and ups and type(ups[8]) == "number" then
+                slamRender = v
             end
         end
-    end
-    return inputHandler, slamRender
-end
 
-local function findHitFunc()
-    for _, v in ipairs(safeGetGC()) do
-        if type(v) == "function" then
-            local ok, c = pcall(getconstants, v)
-            if ok and c then
-                local a, b, d = false, false, false
-                for _, k in ipairs(c) do
-                    if k == "Touched" then a = true
-                    elseif k == "combat" then b = true
-                    elseif k == "Length" then d = true end
-                end
-                if a and b and d then return v end
-            end
-        end
-    end
-end
-
---// Stamina func finders
-local staminaBar, staminaDrain
-
-local function scanStaminaFrom(gcList)
-    for _, v in ipairs(gcList) do
-        if type(v) == "function" then
-            local ok, ups = pcall(getupvalues, v)
-            if ok and ups then
-                if not staminaBar
-                    and typeof(ups[1]) == "Instance" and ups[1].ClassName == "TweenService"
-                    and type(ups[3]) == "number" and type(ups[4]) == "number"
-                    and type(ups[5]) == "boolean" and type(ups[6]) == "number" and ups[6] < 1 then
+        --// Stamina bar: must have "Stamina" constant + TweenService pattern
+        if hasStamina and not staminaBar then
+            local uOk, ups = pcall(getupvalues, v)
+            if uOk and ups then
+                if typeof(ups[1]) == "Instance" and ups[1].ClassName == "TweenService"
+                    and type(ups[3]) == "number"
+                    and type(ups[5]) == "boolean"
+                    and type(ups[6]) == "number" and ups[6] < 1 then
                     staminaBar = v
                 end
-                if not staminaDrain
-                    and type(ups[1]) == "number" and ups[1] >= 0 and ups[1] <= 100
-                    and type(ups[2]) == "boolean"
-                    and type(ups[3]) == "number" and ups[3] > 1700000000 then
-                    staminaDrain = v
-                end
             end
         end
+
     end
 end
 
-local function findStaminaFuncs()
-    staminaBar = nil
-    staminaDrain = nil
-    local ok, gc = pcall(getgc, false)
-    if ok and gc then scanStaminaFrom(gc) end
-    if not staminaBar or not staminaDrain then
-        ok, gc = pcall(getgc, true)
-        if ok and gc then scanStaminaFrom(gc) end
-    end
-    if not staminaBar or not staminaDrain then
-        ok, gc = pcall(getgc)
-        if ok and gc then scanStaminaFrom(gc) end
-    end
-end
-
---// Cached refs
-local combatFunc = findCombatFunc()
-local slamInput, slamRender = findSlamFuncs()
-local hitFunc = findHitFunc()
+scanAll()
 local origReach = 6.5
-findStaminaFuncs()
 
 --//---------------------------------------------------------------
 --// Animation speed boost
@@ -205,8 +175,8 @@ end
 --// Reach (setconstant on hit function)
 --//---------------------------------------------------------------
 local function setReach(val)
-    if hitFunc then
-        pcall(setconstant, hitFunc, 1, val)
+    for _, fn in ipairs(hitFuncs) do
+        pcall(setconstant, fn, 1, val)
     end
 end
 
@@ -257,10 +227,10 @@ local function updateESP()
 end
 
 --//---------------------------------------------------------------
---// Kill aura (firetouchinterest on nearby enemies)
+--// Kill aura
 --//---------------------------------------------------------------
 local lastAura = 0
-local AURA_CD = 0.15
+local AURA_CD = 0.2
 
 local function killAura()
     local now = tick()
@@ -270,13 +240,15 @@ local function killAura()
     if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
-    local rh = char:FindFirstChild("RightHand")
-    local fist = rh and rh:FindFirstChild("Fist")
-    if not fist then
-        local lh = char:FindFirstChild("LeftHand")
-        fist = lh and lh:FindFirstChild("Fist")
+    local fists = {}
+    for _, hand in ipairs({"RightHand", "LeftHand"}) do
+        local h = char:FindFirstChild(hand)
+        if h then
+            local f = h:FindFirstChild("Fist")
+            if f then table.insert(fists, f) end
+        end
     end
-    if not fist then return end
+    if #fists == 0 then return end
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= plr and p.Character then
             local eHRP = p.Character:FindFirstChild("HumanoidRootPart")
@@ -284,8 +256,10 @@ local function killAura()
             if eHRP and eHum and eHum.Health > 0 then
                 local dist = (hrp.Position - eHRP.Position).Magnitude
                 if dist <= State.KillAuraRange then
-                    pcall(firetouchinterest, fist, eHRP, 0)
-                    task.defer(pcall, firetouchinterest, fist, eHRP, 1)
+                    for _, fist in ipairs(fists) do
+                        pcall(firetouchinterest, fist, eHRP, 0)
+                        task.defer(pcall, firetouchinterest, fist, eHRP, 1)
+                    end
                 end
             end
         end
@@ -302,47 +276,48 @@ local function refreshRefs()
     local now = tick()
     if now - lastRefresh < REFRESH_CD then return end
     lastRefresh = now
-    combatFunc = findCombatFunc()
-    slamInput, slamRender = findSlamFuncs()
-    hitFunc = findHitFunc()
-    findStaminaFuncs()
+    scanAll()
 end
 
-local function trySetup(fn, idx, val)
-    local ok = pcall(setupvalue, fn, idx, val)
-    return ok
+local function patchHitFuncs()
+    if #hitFuncs == 0 then refreshRefs(); return false end
+    local anyOk = false
+    for _, fn in ipairs(hitFuncs) do
+        local ok = pcall(function()
+            setupvalue(fn, 18, 0)
+            setupvalue(fn, 1, false)
+            setupvalue(fn, 2, false)
+            setupvalue(fn, 3, false)
+            setupvalue(fn, 4, false)
+            setupvalue(fn, 5, false)
+            setupvalue(fn, 8, false)
+        end)
+        if ok then anyOk = true end
+    end
+    if not anyOk then hitFuncs = {}; refreshRefs() end
+    return anyOk
 end
 
 cons.main = RunService.Heartbeat:Connect(function()
     --// Swing speed
     if State.SwingSpeed then
         boostAnims()
-        if combatFunc then
-            local ok = pcall(function()
-                setupvalue(combatFunc, 18, 0)
-                setupvalue(combatFunc, 2, false)
-                setupvalue(combatFunc, 3, false)
-                setupvalue(combatFunc, 4, false)
-                setupvalue(combatFunc, 5, false)
-                setupvalue(combatFunc, 8, false)
-            end)
-            if not ok then combatFunc = nil; refreshRefs() end
-        else
-            refreshRefs()
-        end
+        patchHitFuncs()
     end
 
     --// Inf slam
     if State.InfSlam then
-        if slamInput then
-            if not trySetup(slamInput, 17, 100) then slamInput = nil; refreshRefs() end
+        if slamHandler then
+            if not pcall(setupvalue, slamHandler, 17, 100) then
+                slamHandler = nil; refreshRefs()
+            end
         else
             refreshRefs()
         end
         if slamRender then
-            if not trySetup(slamRender, 8, 100) then slamRender = nil; refreshRefs() end
-        else
-            refreshRefs()
+            if not pcall(setupvalue, slamRender, 8, 100) then
+                slamRender = nil; refreshRefs()
+            end
         end
         pcall(function()
             plr.PlayerGui.UI.Bars.Slam.Bar.Size = UDim2.new(1, 0, 1, 0)
@@ -358,29 +333,11 @@ cons.main = RunService.Heartbeat:Connect(function()
         else
             refreshRefs()
         end
-        if staminaDrain then
-            local ok = pcall(setupvalue, staminaDrain, 1, 100)
-            if ok then pcall(setupvalue, staminaDrain, 2, true) end
-            if not ok then staminaDrain = nil; refreshRefs() end
-        else
-            refreshRefs()
-        end
     end
 
-    --// Kill aura (reset debounces so hits register + fire touches)
+    --// Kill aura
     if State.KillAura then
-        if combatFunc then
-            pcall(function()
-                setupvalue(combatFunc, 18, 0)
-                setupvalue(combatFunc, 2, false)
-                setupvalue(combatFunc, 3, false)
-                setupvalue(combatFunc, 4, false)
-                setupvalue(combatFunc, 5, false)
-                setupvalue(combatFunc, 8, false)
-            end)
-        else
-            refreshRefs()
-        end
+        patchHitFuncs()
         killAura()
     end
 
@@ -399,13 +356,10 @@ end)
 cons.respawn = plr.CharacterAdded:Connect(function(char)
     char:WaitForChild("Humanoid")
     origFistSize = nil
-    task.wait(1)
-    for i = 1, 10 do
-        combatFunc = findCombatFunc()
-        slamInput, slamRender = findSlamFuncs()
-        hitFunc = findHitFunc()
-        findStaminaFuncs()
-        if combatFunc and slamInput and staminaBar then break end
+    task.wait(1.5)
+    for i = 1, 15 do
+        scanAll()
+        if #hitFuncs > 0 and slamHandler and staminaBar then break end
         task.wait(0.5)
     end
     lastRefresh = tick()
