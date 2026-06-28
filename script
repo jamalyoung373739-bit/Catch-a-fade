@@ -2,118 +2,341 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
-
 local LocalPlayer = Players.LocalPlayer
 local CombatRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Combat")
 
---// Clean up old GUI
-local oldGui = CoreGui:FindFirstChild("SimpleKillAuraGui")
-if not oldGui and LocalPlayer:FindFirstChild("PlayerGui") then
-    oldGui = LocalPlayer.PlayerGui:FindFirstChild("SimpleKillAuraGui")
+--// ─── CLEANUP ───
+for _, name in {"SimpleKillAuraGui", "CAF2_AuraESP", "CAF2_ESPFolder"} do
+    local old = CoreGui:FindFirstChild(name)
+    if not old and LocalPlayer:FindFirstChild("PlayerGui") then
+        old = LocalPlayer.PlayerGui:FindFirstChild(name)
+    end
+    if old then old:Destroy() end
 end
-if oldGui then oldGui:Destroy() end
+if _G.CAF2_Connections then
+    for _, conn in ipairs(_G.CAF2_Connections) do
+        pcall(function() conn:Disconnect() end)
+    end
+end
+_G.CAF2_Connections = {}
 
---// GUI
+--// ─── GUI ───
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "SimpleKillAuraGui"
+ScreenGui.Name = "CAF2_AuraESP"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = (pcall(function() return CoreGui.Name end) and CoreGui) or LocalPlayer:WaitForChild("PlayerGui")
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 150, 0, 50)
-MainFrame.Position = UDim2.new(0.5, -75, 0.8, 0)
+MainFrame.Size = UDim2.new(0, 160, 0, 152)
+MainFrame.Position = UDim2.new(0.5, -80, 0.72, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-MainFrame.BorderSizePixel = 2
-MainFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+MainFrame.BackgroundTransparency = 0.15
+MainFrame.BorderSizePixel = 0
 MainFrame.Active = true
 MainFrame.Draggable = true
 MainFrame.Parent = ScreenGui
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 6)
+local st = Instance.new("UIStroke", MainFrame)
+st.Color = Color3.fromRGB(80, 80, 80); st.Thickness = 1
+local ly = Instance.new("UIListLayout", MainFrame)
+ly.SortOrder = Enum.SortOrder.LayoutOrder; ly.Padding = UDim.new(0, 2)
+local pd = Instance.new("UIPadding", MainFrame)
+pd.PaddingTop = UDim.new(0, 4); pd.PaddingLeft = UDim.new(0, 4); pd.PaddingRight = UDim.new(0, 4)
 
-local ToggleButton = Instance.new("TextButton")
-ToggleButton.Size = UDim2.new(1, 0, 1, 0)
-ToggleButton.BackgroundTransparency = 1
-ToggleButton.Font = Enum.Font.SourceSansBold
-ToggleButton.Text = "Kill Aura: OFF"
-ToggleButton.TextColor3 = Color3.fromRGB(255, 50, 50)
-ToggleButton.TextSize = 18
-ToggleButton.Parent = MainFrame
+local toggles = {}
+local function makeToggle(name, order)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 28)
+    btn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    btn.BorderSizePixel = 0
+    btn.Font = Enum.Font.SourceSansBold
+    btn.TextSize = 15
+    btn.LayoutOrder = order
+    btn.AutoButtonColor = false
+    btn.Parent = MainFrame
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+    toggles[name] = false
+    local function refresh()
+        btn.Text = name .. (toggles[name] and ": ON" or ": OFF")
+        btn.TextColor3 = toggles[name] and Color3.fromRGB(50, 255, 50) or Color3.fromRGB(255, 50, 50)
+    end
+    refresh()
+    btn.MouseButton1Click:Connect(function()
+        toggles[name] = not toggles[name]
+        refresh()
+    end)
+end
+makeToggle("Kill Aura", 1)
+makeToggle("Health ESP", 2)
+makeToggle("Inf Stamina", 3)
+makeToggle("Inf Slam", 4)
 
---// State
-local auraEnabled = false
-local attackDistance = 15
-local lastAttack = 0
-local COOLDOWN = 0.35
+--// ─── HELPERS ───
+local function isTeammate(player)
+    local my = LocalPlayer:FindFirstChild("Party")
+    local their = player:FindFirstChild("Party")
+    if my and their then return my.Value == their.Value end
+    return false
+end
 
---// Enter fist mode so the server accepts our hits
-local function ensureFistMode()
-    pcall(function()
-        CombatRemote:FireServer("fist")
-        CombatRemote:FireServer("guarding")
+local function getLockedTarget()
+    local myChar = LocalPlayer.Character
+    if not myChar then return nil end
+    local tagged = myChar:FindFirstChild("Tagged")
+    if not tagged or not tagged:IsA("StringValue") or tagged.Value == "" then return nil end
+    local tv = tagged.Value
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and (p.Name == tv or p.DisplayName == tv) then
+            return p
+        end
+    end
+    return nil
+end
+
+local function getRealHP(player)
+    local hpVal = player:FindFirstChild("Health")
+    if hpVal and hpVal:IsA("IntValue") then return hpVal.Value end
+    local hum = player.Character and player.Character:FindFirstChild("Humanoid")
+    if hum then return math.floor(hum.Health) end
+    return 0
+end
+
+--// ─── KILL AURA ───
+local lastAtk = 0
+local COOLDOWN = 0.3
+local fistActive = false
+
+local function enterFist()
+    pcall(function() CombatRemote:FireServer("fist") end)
+    pcall(function() CombatRemote:FireServer("guarding") end)
+end
+local function exitFist()
+    pcall(function() CombatRemote:FireServer("unblock") end)
+    pcall(function() CombatRemote:FireServer("hands") end)
+    pcall(function() CombatRemote:FireServer("unguard") end)
+end
+
+local function tryAttack(char)
+    pcall(function() CombatRemote:FireServer("head", char, false) end)
+    task.defer(function()
+        pcall(function() CombatRemote:FireServer("body", char, false) end)
     end)
 end
 
---// Toggle
-ToggleButton.MouseButton1Click:Connect(function()
-    auraEnabled = not auraEnabled
-    if auraEnabled then
-        ToggleButton.Text = "Kill Aura: ON"
-        ToggleButton.TextColor3 = Color3.fromRGB(50, 255, 50)
-        ensureFistMode()
-    else
-        ToggleButton.Text = "Kill Aura: OFF"
-        ToggleButton.TextColor3 = Color3.fromRGB(255, 50, 50)
-        pcall(function()
-            CombatRemote:FireServer("unblock")
-            CombatRemote:FireServer("hands")
-            CombatRemote:FireServer("unguard")
-        end)
+table.insert(_G.CAF2_Connections, RunService.Heartbeat:Connect(function()
+    if not toggles["Kill Aura"] then
+        if fistActive then fistActive = false; exitFist() end
+        return
     end
-end)
-
---// Heartbeat loop
-RunService.Heartbeat:Connect(function()
-    if not auraEnabled then return end
+    if not fistActive then fistActive = true; enterFist() end
 
     local now = tick()
-    if now - lastAttack < COOLDOWN then return end
-
+    if now - lastAtk < COOLDOWN then return end
     local myChar = LocalPlayer.Character
     local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
     if not myRoot then return end
 
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer then
-            local char = player.Character
+    --// Priority: locked-on target (no range limit)
+    local locked = getLockedTarget()
+    if locked and not isTeammate(locked) then
+        local char = locked.Character
+        if char then
+            local hp = getRealHP(locked)
+            if hp > 0 and char:FindFirstChild("HumanoidRootPart") then
+                tryAttack(char)
+                lastAtk = now
+                return
+            end
+        end
+    end
+
+    --// Fallback: nearest enemy in range
+    local bestDist, bestChar = 15, nil
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and not isTeammate(p) then
+            local char = p.Character
             if char then
                 local root = char:FindFirstChild("HumanoidRootPart")
-                local hum = char:FindFirstChild("Humanoid")
-
-                if root and hum and hum.Health > 0 then
-                    local dist = (myRoot.Position - root.Position).Magnitude
-                    if dist <= attackDistance then
-                        --// Party check - skip teammates
-                        local skip = false
-                        if LocalPlayer:FindFirstChild("Party") and player:FindFirstChild("Party") then
-                            if LocalPlayer.Party.Value == player.Party.Value then
-                                skip = true
-                            end
-                        end
-
-                        if not skip then
-                            --// Alternate head and body hits
-                            pcall(function()
-                                CombatRemote:FireServer("head", char, false)
-                            end)
-                            task.defer(function()
-                                pcall(function()
-                                    CombatRemote:FireServer("body", char, false)
-                                end)
-                            end)
-                            lastAttack = now
-                        end
+                if root and getRealHP(p) > 0 then
+                    local d = (myRoot.Position - root.Position).Magnitude
+                    if d < bestDist then
+                        bestDist = d; bestChar = char
                     end
                 end
             end
         end
     end
-end)
+    if bestChar then
+        tryAttack(bestChar)
+        lastAtk = now
+    end
+end))
+
+--// ─── RESPAWN HANDLER ───
+table.insert(_G.CAF2_Connections, LocalPlayer.CharacterAdded:Connect(function(char)
+    char:WaitForChild("HumanoidRootPart")
+    task.wait(0.5)
+    if toggles["Kill Aura"] then
+        fistActive = false; enterFist(); fistActive = true
+    end
+    task.wait(0.5)
+    _G.CAF2_needPatch = true
+end))
+
+--// ─── STAMINA + SLAM PATCHES ───
+local function patchAll()
+    pcall(function()
+        for _, fn in ipairs(getgc()) do
+            if type(fn) == "function" and islclosure(fn) then
+                local ok, name = pcall(debug.info, fn, "n")
+                if ok then
+                    if name == "takestamina" then
+                        hookfunction(fn, function() end)
+                    elseif name == "regenstamina" then
+                        debug.setupvalue(fn, 3, 9999)
+                        debug.setupvalue(fn, 4, 9999)
+                    end
+                end
+            end
+        end
+    end)
+end
+patchAll()
+
+-- Slam + stamina keepalive loop (throttled to every 0.5s)
+local lastPatch = 0
+table.insert(_G.CAF2_Connections, RunService.Heartbeat:Connect(function()
+    local now = tick()
+    if now - lastPatch < 0.5 then return end
+    lastPatch = now
+
+    if _G.CAF2_needPatch then
+        _G.CAF2_needPatch = false
+        patchAll()
+    end
+
+    if toggles["Inf Stamina"] then
+        pcall(function()
+            for _, fn in ipairs(getgc()) do
+                if type(fn) == "function" and islclosure(fn) then
+                    local ok, name = pcall(debug.info, fn, "n")
+                    if ok and name == "regenstamina" then
+                        debug.setupvalue(fn, 3, 9999)
+                        break
+                    end
+                end
+            end
+        end)
+    end
+
+    if toggles["Inf Slam"] then
+        pcall(function()
+            for _, fn in ipairs(getgc()) do
+                if type(fn) == "function" and islclosure(fn) then
+                    local ok, name = pcall(debug.info, fn, "n")
+                    if ok and name == "punch" then
+                        debug.setupvalue(fn, 20, 100)
+                        break
+                    end
+                end
+            end
+        end)
+    end
+end))
+
+--// ─── HEALTH ESP ───
+local espFolder = Instance.new("Folder")
+espFolder.Name = "CAF2_ESPFolder"
+espFolder.Parent = CoreGui
+
+local function makeBar(player)
+    if espFolder:FindFirstChild(player.Name) then return end
+    local char = player.Character
+    if not char or not char:FindFirstChild("Head") then return end
+
+    local bill = Instance.new("BillboardGui")
+    bill.Name = player.Name
+    bill.Adornee = char.Head
+    bill.Size = UDim2.new(0, 60, 0, 12)
+    bill.StudsOffset = Vector3.new(0, 2.5, 0)
+    bill.AlwaysOnTop = true
+    bill.MaxDistance = 200
+    bill.Parent = espFolder
+
+    local nl = Instance.new("TextLabel")
+    nl.Size = UDim2.new(1, 0, 0, 10)
+    nl.Position = UDim2.new(0, 0, -1.2, 0)
+    nl.BackgroundTransparency = 1
+    nl.Text = player.DisplayName
+    nl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    nl.TextStrokeTransparency = 0.5
+    nl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    nl.Font = Enum.Font.SourceSansBold
+    nl.TextSize = 13
+    nl.Parent = bill
+
+    local bg = Instance.new("Frame")
+    bg.Size = UDim2.new(1, 0, 1, 0)
+    bg.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    bg.BorderSizePixel = 0
+    bg.Parent = bill
+    Instance.new("UICorner", bg).CornerRadius = UDim.new(0, 3)
+
+    local fill = Instance.new("Frame")
+    fill.Name = "Fill"
+    fill.Size = UDim2.new(1, 0, 1, 0)
+    fill.BackgroundColor3 = Color3.fromRGB(50, 255, 50)
+    fill.BorderSizePixel = 0
+    fill.Parent = bg
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(0, 3)
+
+    local hp = Instance.new("TextLabel")
+    hp.Name = "HP"
+    hp.Size = UDim2.new(1, 0, 1, 0)
+    hp.BackgroundTransparency = 1
+    hp.TextColor3 = Color3.fromRGB(255, 255, 255)
+    hp.TextStrokeTransparency = 0.5
+    hp.Font = Enum.Font.SourceSansBold
+    hp.TextSize = 10
+    hp.ZIndex = 2
+    hp.Parent = bg
+end
+
+table.insert(_G.CAF2_Connections, RunService.Heartbeat:Connect(function()
+    if not toggles["Health ESP"] then
+        if #espFolder:GetChildren() > 0 then espFolder:ClearAllChildren() end
+        return
+    end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            local char = p.Character
+            local bill = espFolder:FindFirstChild(p.Name)
+            if char and char:FindFirstChild("Head") then
+                if not bill then makeBar(p) end
+                bill = espFolder:FindFirstChild(p.Name)
+                if bill then
+                    bill.Adornee = char:FindFirstChild("Head")
+                    local hp = getRealHP(p)
+                    local pct = math.clamp(hp / 100, 0, 1)
+                    local bg = bill:FindFirstChildWhichIsA("Frame")
+                    if bg then
+                        local fill = bg:FindFirstChild("Fill")
+                        if fill then
+                            fill.Size = UDim2.new(pct, 0, 1, 0)
+                            fill.BackgroundColor3 = Color3.fromRGB(255 * (1 - pct), 255 * pct, 50 * pct)
+                        end
+                        local hpL = bg:FindFirstChild("HP")
+                        if hpL then hpL.Text = hp .. "/100" end
+                    end
+                end
+            else
+                if bill then bill:Destroy() end
+            end
+        end
+    end
+end))
+
+table.insert(_G.CAF2_Connections, Players.PlayerRemoving:Connect(function(p)
+    local b = espFolder:FindFirstChild(p.Name)
+    if b then b:Destroy() end
+end))
