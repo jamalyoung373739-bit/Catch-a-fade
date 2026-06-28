@@ -1,34 +1,32 @@
---[[
-    Catch A Fade - Simple Kill Aura
-]]
-
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
 
 local LocalPlayer = Players.LocalPlayer
+local CombatRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Combat")
 
--- Clean up any existing GUI
-local existingGui = CoreGui:FindFirstChild("SimpleKillAuraGui") or (LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("SimpleKillAuraGui"))
-if existingGui then
-    existingGui:Destroy()
+--// Clean up old GUI
+local oldGui = CoreGui:FindFirstChild("SimpleKillAuraGui")
+if not oldGui and LocalPlayer:FindFirstChild("PlayerGui") then
+    oldGui = LocalPlayer.PlayerGui:FindFirstChild("SimpleKillAuraGui")
 end
+if oldGui then oldGui:Destroy() end
 
--- Create GUI
+--// GUI
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "SimpleKillAuraGui"
 ScreenGui.ResetOnSpawn = false
-ScreenGui.Parent = pcall(function() return CoreGui.Name end) and CoreGui or LocalPlayer:WaitForChild("PlayerGui")
+ScreenGui.Parent = (pcall(function() return CoreGui.Name end) and CoreGui) or LocalPlayer:WaitForChild("PlayerGui")
 
 local MainFrame = Instance.new("Frame")
 MainFrame.Size = UDim2.new(0, 150, 0, 50)
 MainFrame.Position = UDim2.new(0.5, -75, 0.8, 0)
-MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20) -- Simple black box
+MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 MainFrame.BorderSizePixel = 2
 MainFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
 MainFrame.Active = true
-MainFrame.Draggable = true -- Allows dragging the box around
+MainFrame.Draggable = true
 MainFrame.Parent = ScreenGui
 
 local ToggleButton = Instance.new("TextButton")
@@ -40,82 +38,79 @@ ToggleButton.TextColor3 = Color3.fromRGB(255, 50, 50)
 ToggleButton.TextSize = 18
 ToggleButton.Parent = MainFrame
 
--- Kill Aura Logic
+--// State
 local auraEnabled = false
 local attackDistance = 15
+local lastAttack = 0
+local COOLDOWN = 0.35
 
-local function getHitRemotes()
-    local remotes = {}
-    local r1 = ReplicatedStorage:FindFirstChild("Hit")
-    if r1 and r1:IsA("RemoteEvent") then table.insert(remotes, r1) end
-    
-    local remoteEvents = ReplicatedStorage:FindFirstChild("RemoteEvents")
-    if remoteEvents then
-        local combatEvents = remoteEvents:FindFirstChild("CombatEvents")
-        if combatEvents then
-            local r2 = combatEvents:FindFirstChild("Hit")
-            if r2 and r2:IsA("RemoteEvent") then table.insert(remotes, r2) end
-        end
-    end
-    return remotes
+--// Enter fist mode so the server accepts our hits
+local function ensureFistMode()
+    pcall(function()
+        CombatRemote:FireServer("fist")
+        CombatRemote:FireServer("guarding")
+    end)
 end
 
-local function attackTarget(character)
-    local remotes = getHitRemotes()
-    if #remotes == 0 then return end
-    
-    -- Target primary parts to ensure hit registers
-    local targets = {
-        character:FindFirstChild("Head"),
-        character:FindFirstChild("HumanoidRootPart"),
-        character:FindFirstChild("Torso"),
-        character:FindFirstChild("UpperTorso")
-    }
-    
-    for _, remote in ipairs(remotes) do
-        for _, part in ipairs(targets) do
-            if part then
-                -- Try firing with the part directly (standard for many melee scripts)
-                remote:FireServer(part)
-                -- Also try firing with just the character model
-                remote:FireServer(character)
-            end
-        end
-    end
-end
-
+--// Toggle
 ToggleButton.MouseButton1Click:Connect(function()
     auraEnabled = not auraEnabled
     if auraEnabled then
         ToggleButton.Text = "Kill Aura: ON"
         ToggleButton.TextColor3 = Color3.fromRGB(50, 255, 50)
+        ensureFistMode()
     else
         ToggleButton.Text = "Kill Aura: OFF"
         ToggleButton.TextColor3 = Color3.fromRGB(255, 50, 50)
+        pcall(function()
+            CombatRemote:FireServer("unblock")
+            CombatRemote:FireServer("hands")
+            CombatRemote:FireServer("unguard")
+        end)
     end
 end)
 
--- Loop
+--// Heartbeat loop
 RunService.Heartbeat:Connect(function()
     if not auraEnabled then return end
-    
+
+    local now = tick()
+    if now - lastAttack < COOLDOWN then return end
+
     local myChar = LocalPlayer.Character
     local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
     if not myRoot then return end
-    
+
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer then
             local char = player.Character
             if char then
                 local root = char:FindFirstChild("HumanoidRootPart")
                 local hum = char:FindFirstChild("Humanoid")
-                
+
                 if root and hum and hum.Health > 0 then
                     local dist = (myRoot.Position - root.Position).Magnitude
                     if dist <= attackDistance then
-                        pcall(function()
-                            attackTarget(char)
-                        end)
+                        --// Party check - skip teammates
+                        local skip = false
+                        if LocalPlayer:FindFirstChild("Party") and player:FindFirstChild("Party") then
+                            if LocalPlayer.Party.Value == player.Party.Value then
+                                skip = true
+                            end
+                        end
+
+                        if not skip then
+                            --// Alternate head and body hits
+                            pcall(function()
+                                CombatRemote:FireServer("head", char, false)
+                            end)
+                            task.defer(function()
+                                pcall(function()
+                                    CombatRemote:FireServer("body", char, false)
+                                end)
+                            end)
+                            lastAttack = now
+                        end
                     end
                 end
             end
