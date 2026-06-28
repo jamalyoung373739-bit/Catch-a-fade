@@ -26,7 +26,29 @@ ScreenGui.Name = "CAF2_AuraESP"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = (pcall(function() return CoreGui.Name end) and CoreGui) or LocalPlayer:WaitForChild("PlayerGui")
 
+--// Mobile toggle circle
+local mobileToggle = Instance.new("TextButton")
+mobileToggle.Name = "MobileToggle"
+mobileToggle.Size = UDim2.new(0, 42, 0, 42)
+mobileToggle.Position = UDim2.new(0, 10, 0.45, 0)
+mobileToggle.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+mobileToggle.BackgroundTransparency = 0.1
+mobileToggle.Text = "☰"
+mobileToggle.TextColor3 = Color3.fromRGB(50, 255, 50)
+mobileToggle.TextSize = 24
+mobileToggle.Font = Enum.Font.SourceSansBold
+mobileToggle.AutoButtonColor = false
+mobileToggle.Active = true
+mobileToggle.Draggable = true
+mobileToggle.ZIndex = 10
+mobileToggle.Parent = ScreenGui
+Instance.new("UICorner", mobileToggle).CornerRadius = UDim.new(1, 0)
+local mStroke = Instance.new("UIStroke", mobileToggle)
+mStroke.Color = Color3.fromRGB(80, 80, 80); mStroke.Thickness = 1.5
+
+--// Main panel
 local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainPanel"
 MainFrame.Size = UDim2.new(0, 160, 0, 152)
 MainFrame.Position = UDim2.new(0.5, -80, 0.72, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
@@ -34,6 +56,7 @@ MainFrame.BackgroundTransparency = 0.15
 MainFrame.BorderSizePixel = 0
 MainFrame.Active = true
 MainFrame.Draggable = true
+MainFrame.Visible = true
 MainFrame.Parent = ScreenGui
 Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 6)
 local st = Instance.new("UIStroke", MainFrame)
@@ -43,6 +66,13 @@ ly.SortOrder = Enum.SortOrder.LayoutOrder; ly.Padding = UDim.new(0, 2)
 local pd = Instance.new("UIPadding", MainFrame)
 pd.PaddingTop = UDim.new(0, 4); pd.PaddingLeft = UDim.new(0, 4); pd.PaddingRight = UDim.new(0, 4)
 
+--// Mobile toggle logic
+mobileToggle.MouseButton1Click:Connect(function()
+    MainFrame.Visible = not MainFrame.Visible
+    mobileToggle.TextColor3 = MainFrame.Visible and Color3.fromRGB(50, 255, 50) or Color3.fromRGB(255, 50, 50)
+end)
+
+--// Toggle buttons
 local toggles = {}
 local function makeToggle(name, order)
     local btn = Instance.new("TextButton")
@@ -86,9 +116,7 @@ local function getLockedTarget()
     if not tagged or not tagged:IsA("StringValue") or tagged.Value == "" then return nil end
     local tv = tagged.Value
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and (p.Name == tv or p.DisplayName == tv) then
-            return p
-        end
+        if p ~= LocalPlayer and (p.Name == tv or p.DisplayName == tv) then return p end
     end
     return nil
 end
@@ -115,7 +143,6 @@ local function exitFist()
     pcall(function() CombatRemote:FireServer("hands") end)
     pcall(function() CombatRemote:FireServer("unguard") end)
 end
-
 local function tryAttack(char)
     pcall(function() CombatRemote:FireServer("head", char, false) end)
     task.defer(function()
@@ -136,21 +163,14 @@ table.insert(_G.CAF2_Connections, RunService.Heartbeat:Connect(function()
     local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
     if not myRoot then return end
 
-    --// Priority: locked-on target (no range limit)
     local locked = getLockedTarget()
     if locked and not isTeammate(locked) then
         local char = locked.Character
-        if char then
-            local hp = getRealHP(locked)
-            if hp > 0 and char:FindFirstChild("HumanoidRootPart") then
-                tryAttack(char)
-                lastAtk = now
-                return
-            end
+        if char and char:FindFirstChild("HumanoidRootPart") and getRealHP(locked) > 0 then
+            tryAttack(char); lastAtk = now; return
         end
     end
 
-    --// Fallback: nearest enemy in range
     local bestDist, bestChar = 15, nil
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LocalPlayer and not isTeammate(p) then
@@ -159,39 +179,31 @@ table.insert(_G.CAF2_Connections, RunService.Heartbeat:Connect(function()
                 local root = char:FindFirstChild("HumanoidRootPart")
                 if root and getRealHP(p) > 0 then
                     local d = (myRoot.Position - root.Position).Magnitude
-                    if d < bestDist then
-                        bestDist = d; bestChar = char
-                    end
+                    if d < bestDist then bestDist = d; bestChar = char end
                 end
             end
         end
     end
-    if bestChar then
-        tryAttack(bestChar)
-        lastAtk = now
-    end
+    if bestChar then tryAttack(bestChar); lastAtk = now end
 end))
 
---// ─── RESPAWN HANDLER ───
+--// ─── RESPAWN ───
 table.insert(_G.CAF2_Connections, LocalPlayer.CharacterAdded:Connect(function(char)
     char:WaitForChild("HumanoidRootPart")
     task.wait(0.5)
-    if toggles["Kill Aura"] then
-        fistActive = false; enterFist(); fistActive = true
-    end
+    if toggles["Kill Aura"] then fistActive = false; enterFist(); fistActive = true end
     task.wait(0.5)
     _G.CAF2_needPatch = true
 end))
 
---// ─── STAMINA + SLAM PATCHES ───
+--// ─── STAMINA + SLAM ───
 local function patchAll()
     pcall(function()
         for _, fn in ipairs(getgc()) do
             if type(fn) == "function" and islclosure(fn) then
                 local ok, name = pcall(debug.info, fn, "n")
                 if ok then
-                    if name == "takestamina" then
-                        hookfunction(fn, function() end)
+                    if name == "takestamina" then hookfunction(fn, function() end)
                     elseif name == "regenstamina" then
                         debug.setupvalue(fn, 3, 9999)
                         debug.setupvalue(fn, 4, 9999)
@@ -203,17 +215,13 @@ local function patchAll()
 end
 patchAll()
 
--- Slam + stamina keepalive loop (throttled to every 0.5s)
 local lastPatch = 0
 table.insert(_G.CAF2_Connections, RunService.Heartbeat:Connect(function()
     local now = tick()
     if now - lastPatch < 0.5 then return end
     lastPatch = now
 
-    if _G.CAF2_needPatch then
-        _G.CAF2_needPatch = false
-        patchAll()
-    end
+    if _G.CAF2_needPatch then _G.CAF2_needPatch = false; patchAll() end
 
     if toggles["Inf Stamina"] then
         pcall(function()
@@ -221,8 +229,7 @@ table.insert(_G.CAF2_Connections, RunService.Heartbeat:Connect(function()
                 if type(fn) == "function" and islclosure(fn) then
                     local ok, name = pcall(debug.info, fn, "n")
                     if ok and name == "regenstamina" then
-                        debug.setupvalue(fn, 3, 9999)
-                        break
+                        debug.setupvalue(fn, 3, 9999); break
                     end
                 end
             end
@@ -235,8 +242,7 @@ table.insert(_G.CAF2_Connections, RunService.Heartbeat:Connect(function()
                 if type(fn) == "function" and islclosure(fn) then
                     local ok, name = pcall(debug.info, fn, "n")
                     if ok and name == "punch" then
-                        debug.setupvalue(fn, 20, 100)
-                        break
+                        debug.setupvalue(fn, 20, 100); break
                     end
                 end
             end
@@ -340,43 +346,3 @@ table.insert(_G.CAF2_Connections, Players.PlayerRemoving:Connect(function(p)
     local b = espFolder:FindFirstChild(p.Name)
     if b then b:Destroy() end
 end))
-
-local CoreGui = game:GetService("CoreGui")
-local gui = CoreGui:FindFirstChild("CAF2_AuraESP")
-if not gui then return end
-
-local mainFrame = gui:FindFirstChildWhichIsA("Frame")
-if not mainFrame then return end
-
--- Remove old toggle if exists
-local old = gui:FindFirstChild("MobileToggle")
-if old then old:Destroy() end
-
-local toggle = Instance.new("TextButton")
-toggle.Name = "MobileToggle"
-toggle.Size = UDim2.new(0, 40, 0, 40)
-toggle.Position = UDim2.new(0, 10, 0.5, -20)
-toggle.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-toggle.BackgroundTransparency = 0.15
-toggle.Text = "☰"
-toggle.TextColor3 = Color3.fromRGB(50, 255, 50)
-toggle.TextSize = 22
-toggle.Font = Enum.Font.SourceSansBold
-toggle.AutoButtonColor = false
-toggle.Active = true
-toggle.Draggable = true
-toggle.Parent = gui
-
-local corner = Instance.new("UICorner", toggle)
-corner.CornerRadius = UDim.new(1, 0)
-
-local stroke = Instance.new("UIStroke", toggle)
-stroke.Color = Color3.fromRGB(80, 80, 80)
-stroke.Thickness = 1
-
-local visible = true
-toggle.MouseButton1Click:Connect(function()
-    visible = not visible
-    mainFrame.Visible = visible
-    toggle.TextColor3 = visible and Color3.fromRGB(50, 255, 50) or Color3.fromRGB(255, 50, 50)
-end)
