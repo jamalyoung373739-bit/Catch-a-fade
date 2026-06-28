@@ -131,6 +131,7 @@ end
 
 --// ─── KILL AURA ───
 local lastAtk = 0
+local lastFistRefresh = 0
 local COOLDOWN = 0.3
 local fistActive = false
 
@@ -144,10 +145,43 @@ local function exitFist()
     pcall(function() CombatRemote:FireServer("unguard") end)
 end
 local function tryAttack(char)
+    enterFist() -- Re-verify combat stance right before swinging
     pcall(function() CombatRemote:FireServer("head", char, false) end)
     task.defer(function()
         pcall(function() CombatRemote:FireServer("body", char, false) end)
     end)
+end
+
+-- Monitor getting hit to automatically refresh combat stance when stunned/damaged
+local function monitorCharacter(char)
+    if not char then return end
+    task.spawn(function()
+        local hum = char:WaitForChild("Humanoid", 5)
+        if hum then
+            local lastHP = hum.Health
+            local conn
+            conn = hum.HealthChanged:Connect(function(newHP)
+                if newHP < lastHP then
+                    -- Detected hit/damage taken!
+                    if toggles["Kill Aura"] and newHP > 0 then
+                        enterFist()
+                        task.delay(0.2, function()
+                            if toggles["Kill Aura"] and getRealHP(LocalPlayer) > 0 then enterFist() end
+                        end)
+                        task.delay(0.5, function()
+                            if toggles["Kill Aura"] and getRealHP(LocalPlayer) > 0 then enterFist() end
+                        end)
+                    end
+                end
+                lastHP = newHP
+            end)
+            table.insert(_G.CAF2_Connections, conn)
+        end
+    end)
+end
+
+if LocalPlayer.Character then
+    monitorCharacter(LocalPlayer.Character)
 end
 
 table.insert(_G.CAF2_Connections, RunService.Heartbeat:Connect(function()
@@ -157,7 +191,16 @@ table.insert(_G.CAF2_Connections, RunService.Heartbeat:Connect(function()
     end
     if not fistActive then fistActive = true; enterFist() end
 
+    -- Do not attempt attacks if dead
+    if getRealHP(LocalPlayer) <= 0 then return end
+
     local now = tick()
+    -- Periodically refresh state in case server reset stance silently
+    if now - lastFistRefresh > 0.75 then
+        lastFistRefresh = now
+        enterFist()
+    end
+
     if now - lastAtk < COOLDOWN then return end
     local myChar = LocalPlayer.Character
     local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
@@ -189,6 +232,7 @@ end))
 
 --// ─── RESPAWN ───
 table.insert(_G.CAF2_Connections, LocalPlayer.CharacterAdded:Connect(function(char)
+    monitorCharacter(char)
     char:WaitForChild("HumanoidRootPart")
     task.wait(0.5)
     if toggles["Kill Aura"] then fistActive = false; enterFist(); fistActive = true end
