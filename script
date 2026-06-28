@@ -340,3 +340,43 @@ table.insert(_G.CAF2_Connections, Players.PlayerRemoving:Connect(function(p)
     local b = espFolder:FindFirstChild(p.Name)
     if b then b:Destroy() end
 end))
+
+local CoreGui = game:GetService("CoreGui")
+local gui = CoreGui:FindFirstChild("CAF2_AuraESP")
+if not gui then return end
+
+local mainFrame = gui:FindFirstChildWhichIsA("Frame")
+if not mainFrame then return end
+
+-- Remove old toggle if exists
+local old = gui:FindFirstChild("MobileToggle")
+if old then old:Destroy() end
+
+local toggle = Instance.new("TextButton")
+toggle.Name = "MobileToggle"
+toggle.Size = UDim2.new(0, 40, 0, 40)
+toggle.Position = UDim2.new(0, 10, 0.5, -20)
+toggle.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+toggle.BackgroundTransparency = 0.15
+toggle.Text = "☰"
+toggle.TextColor3 = Color3.fromRGB(50, 255, 50)
+toggle.TextSize = 22
+toggle.Font = Enum.Font.SourceSansBold
+toggle.AutoButtonColor = false
+toggle.Active = true
+toggle.Draggable = true
+toggle.Parent = gui
+
+local corner = Instance.new("UICorner", toggle)
+corner.CornerRadius = UDim.new(1, 0)
+
+local stroke = Instance.new("UIStroke", toggle)
+stroke.Color = Color3.fromRGB(80, 80, 80)
+stroke.Thickness = 1
+
+local visible = true
+toggle.MouseButton1Click:Connect(function()
+    visible = not visible
+    mainFrame.Visible = visible
+    toggle.TextColor3 = visible and Color3.fromRGB(50, 255, 50) or Color3.fromRGB(255, 50, 50)
+end)
